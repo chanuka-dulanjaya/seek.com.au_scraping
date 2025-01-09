@@ -4,16 +4,20 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
 import pandas as pd
 import logging
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
-# Chrome driver options (headless mode for efficiency)
+# Configure Chrome driver options for headless mode
 options = Options()
-options.headless = True
+options.add_argument("--headless=new")  # Use the new headless mode (more stable for some versions)
+options.add_argument("--window-size=1920,1080")  # Set a default window size
+options.add_argument("--disable-extensions")  # Disable extensions
+options.add_argument("--disable-popup-blocking")  # Disable popup blocking
+options.add_argument("--start-maximized")  # Simulate a maximized screen
 driver = webdriver.Chrome(options=options)
 
 # Initialize data storage
@@ -47,36 +51,55 @@ def extract_job_details(card):
 try:
     # Open Seek.com.au
     logging.info("Opening Seek.com.au...")
+
     driver.get("https://www.seek.com.au/")
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "keywords-input")))
+    logging.info("Website loaded successfully.")
 
     # Search for IT jobs
+    logging.info("Searching for IT jobs...")
     search_box = driver.find_element(By.ID, "keywords-input")
     search_box.send_keys("IT")
     search_box.send_keys(Keys.RETURN)
 
     # Wait for search results
     WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "article[data-automation='normalJob']")))
+    logging.info("Job search results loaded successfully.")
 
-    # Scrape job postings
-    while True:
-        # Find job cards
+    # Scrape job postings from 10 pages
+    for page_num in range(1, 11):
+        logging.info(f"Scraping page {page_num}...")
+
+        # Find job cards on the current page
         job_cards = driver.find_elements(By.CSS_SELECTOR, "article[data-automation='normalJob']")
+        logging.info(f"Found {len(job_cards)} job postings on this page.")
         for card in job_cards:
             job_details = extract_job_details(card)
             job_list.append(job_details)
 
-        # Navigate to the next page
-        try:
-            next_button = driver.find_element(By.CSS_SELECTOR, "a[data-automation='page-next']")
-            if "aria-disabled" in next_button.get_attribute("outerHTML"):
-                logging.info("Reached the last page.")
+        if page_num < 10:
+            try:
+                # Find the "Next" button and ensure it is clickable
+                next_button = WebDriverWait(driver, 20).until(
+                    EC.element_to_be_clickable((By.XPATH, "//a[@aria-label='Next']"))
+                )
+                # Scroll to the next button to make sure it's in view
+                driver.execute_script("arguments[0].scrollIntoView();", next_button)
+                next_button.click()
+                logging.info(f"Clicked on the 'Next' button for page {page_num + 1}. Waiting for the next page to load...")
+                
+                # Wait for the new job cards to load
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, "article[data-automation='normalJob']"))
+                )
+                logging.info(f"Page {page_num + 1} loaded successfully.")
+            except TimeoutException:
+                logging.error(f"Timeout occurred while waiting for the 'Next' button on page {page_num}.")
                 break
-            next_button.click()
-            WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "article[data-automation='normalJob']")))
-        except NoSuchElementException:
-            logging.info("No more pages available.")
+        else:
+            logging.info("Reached 10 pages. Exiting pagination loop.")
             break
+
 
 except TimeoutException as e:
     logging.error(f"Timeout occurred: {e}")
@@ -90,3 +113,4 @@ finally:
 
     # Close the browser
     driver.quit()
+    logging.info("Browser closed.")
